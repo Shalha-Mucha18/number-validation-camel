@@ -1,0 +1,5 @@
+<ChannelList>
+  <Channel>MYAPP</Channel>
+  <Channel>USSD</Channel>
+  <Channel>WEB</Channel>
+</ChannelList>

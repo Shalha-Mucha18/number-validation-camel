@@ -1,0 +1,6 @@
+<requestBody>
+  <referenceId>REF-1002</referenceId>
+  <msisdn>8801700000002</msisdn>
+  <simNo></simNo>
+  <bsCode>DEMO-BS</bsCode>
+</requestBody>
