@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FAKE RMS BACKEND, only so the demo runs without real backend systems.
+  In production this would be a real system reached through {{rmsURL}}.
+
+  Behaviour depends on the msisdn sent:
+    ...0999  -> status INACTIVE
+    ...0500  -> HTTP 500 (tests doTry / doCatch)
+    anything else -> status ACTIVE
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+         http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+         http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd">
+
+    <routeContext id="mockBackendRoutes" xmlns="http://camel.apache.org/schema/spring">
+
+        <route id="MockRms_Route">
+            <from uri="jetty:http://0.0.0.0:{{mock.rms.port}}/mock/rms"/>
+            <convertBodyTo type="java.lang.String"/>
+            <log message="[MOCK-RMS] Received: ${body}"/>
+            <choice>
+                <when>
+                    <simple>${body} contains '1700000500'</simple>
+                    <setHeader name="CamelHttpResponseCode"><constant>500</constant></setHeader>
+                    <setBody><constant>RMS internal error</constant></setBody>
+                </when>
+                <when>
+                    <simple>${body} contains '1700000999'</simple>
+                    <setBody><constant><![CDATA[<rmsResponse><status>INACTIVE</status></rmsResponse>]]></constant></setBody>
+                </when>
+                <otherwise>
+                    <setBody><constant><![CDATA[<rmsResponse><status>ACTIVE</status></rmsResponse>]]></constant></setBody>
+                </otherwise>
+            </choice>
+            <setHeader name="Content-Type"><constant>application/xml</constant></setHeader>
+        </route>
+
+    </routeContext>
+</beans>
