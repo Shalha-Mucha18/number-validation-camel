@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Routes shared by every API: error response + transaction log -->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+         http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+         http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd">
+
+    <routeContext id="commonRoutes" xmlns="http://camel.apache.org/schema/spring">
+
+        <!-- Common error route (slides 14, 16, 17).
+             Input: headers errorCode + errorDesc. Output: error XML.
+             NOTE: HTTP status stays 200. "Handled" is NOT "success". -->
+        <route id="LogOrError_Route">
+            <from uri="direct:LogOrError"/>
+            <log loggingLevel="WARN"
+                 message="[${exchangeProperty.traceId}] Business error ${header.errorCode}: ${header.errorDesc}"/>
+            <setBody><constant>&lt;empty/&gt;</constant></setBody>
+            <to uri="xslt:customResources/transformation/xslt/Xform_ErrorResponse.xsl"/>
+            <removeHeaders pattern="*" excludePattern="X-Trace-Id"/>
+            <setHeader name="Content-Type"><constant>application/xml</constant></setHeader>
+        </route>
+
+        <!-- Producer side of the transaction log (slide 18).
+             Runs on a wireTap COPY, so the user does not wait for it. -->
+        <route id="SendTxnLog_Route">
+            <from uri="direct:SendTxnLog"/>
+            <setBody>
+                <simple>{"traceId":"${exchangeProperty.traceId}","referenceId":"${header.referenceId}","msisdn":"${exchangeProperty.msisdn}","rmsStatus":"${exchangeProperty.rmsStatus}","time":"${date:now:yyyy-MM-dd HH:mm:ss}"}</simple>
+            </setBody>
+            <!-- dev: seda (in-memory queue). kafka profile: kafka topic (slide 37) -->
+            <to pattern="InOnly" uri="{{txnLog.producerUri}}"/>
+            <log message="[${exchangeProperty.traceId}] Transaction log sent to {{txnLog.producerUri}}"/>
+        </route>
+
+        <!-- Consumer side: in production this would be a SEPARATE application -->
+        <route id="TxnLogConsumer_Route">
+            <from uri="{{txnLog.consumerUri}}"/>
+            <log message="[TXN-CONSUMER] Received transaction log: ${body}"/>
+        </route>
+
+    </routeContext>
+</beans>

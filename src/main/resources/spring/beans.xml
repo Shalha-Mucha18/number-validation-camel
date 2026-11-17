@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Java beans that routes call with <bean ref="..."/> or <process ref="..."/> -->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+                           http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="traceIdProcessor" class="com.example.demo.support.TraceIdProcessor"/>
+
+    <bean id="MnpValidationValidate" class="com.example.demo.validator.MnpValidationValidator"/>
+
+    <bean id="channelAggregationStrategy" class="com.example.demo.aggregate.ChannelAggregationStrategy"/>
+
+</beans>

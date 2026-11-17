@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  THE CamelContext of this application (slide 5). Camel 3 allows only ONE per app.
+  Reading order:  onException  ->  rest  ->  main route  ->  sub-routes (direct:)
+-->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+         http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+         http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd">
+
+    <camelContext id="demoCamel" streamCache="true" xmlns="http://camel.apache.org/schema/spring">
+
+        <!-- Routes defined in other files (common-routes.xml, mock-backend-routes.xml) -->
+        <routeContextRef ref="commonRoutes"/>
+        <routeContextRef ref="mockBackendRoutes"/>
+
+        <!-- =========================================================
+             GLOBAL ERROR HANDLING (slide 16)
+             Applies to every route in this context.
+             ========================================================= -->
+        <onException>
+            <exception>com.example.demo.exception.ValidationException</exception>
+            <handled><constant>true</constant></handled>
+            <setHeader name="errorCode"><constant>EX002</constant></setHeader>
+            <setHeader name="errorDesc"><simple>${exception.message}</simple></setHeader>
+            <to uri="direct:LogOrError"/>
+        </onException>
+
+        <onException>
+            <exception>java.lang.Exception</exception>
+            <handled><constant>true</constant></handled>
+            <setHeader name="errorCode"><constant>EX999</constant></setHeader>
+            <setHeader name="errorDesc"><simple>Internal error: ${exception.message}</simple></setHeader>
+            <to uri="direct:LogOrError"/>
+        </onException>
+
+        <!-- =========================================================
+             REST ENTRY (slide 10)
+             URL = http://localhost:9091/cxf/api/v1/demo/mnpValidation
+             ========================================================= -->
+        <restConfiguration component="jetty" contextPath="/cxf" port="{{rest.port}}" bindingMode="off"/>
+
+        <rest path="/api/v1">
+            <post uri="/demo/mnpValidation" consumes="application/xml" produces="application/xml">
+                <to uri="direct:mnpValidationStart"/>
+            </post>
+            <post uri="/demo/channelStatus" consumes="application/xml" produces="application/xml">
+                <to uri="direct:channelStatusStart"/>
+            </post>
+        </rest>
+
+        <!-- =========================================================
+             MAIN ROUTE: MNP validation (slides 9, 11, 12, 14, 18)
+             ========================================================= -->
+        <route id="MnpValidationStart_Route">
+            <from uri="direct:mnpValidationStart"/>
+
+            <!-- 0. Trace-Id + read body once as String (slide 42) -->
+            <process ref="traceIdProcessor"/>
+            <convertBodyTo type="java.lang.String"/>
+            <log message="[${exchangeProperty.traceId}] MNP request received: ${body}"/>
+
+            <!-- 1. Java validation: XML -> Java bean (slide 11) -->
+            <bean ref="MnpValidationValidate" method="doValidate"/>
+            <log message="[${exchangeProperty.traceId}] Validation OK. referenceId(header)=${header.referenceId}, msisdn(property)=${exchangeProperty.msisdn}"/>
+
+            <!-- 2. SAVE the request before backend calls replace the body (slide 12) -->
+            <setProperty name="requestBody">
+                <simple resultType="org.w3c.dom.Document">${body}</simple>
+            </setProperty>
+
+            <!-- 3. Business rules with choice / stop (slide 14) -->
+            <choice>
+                <when>
+                    <simple>${exchangeProperty.simNo} == ''</simple>
+                    <setHeader name="errorCode"><constant>039</constant></setHeader>
+                    <setHeader name="errorDesc"><constant>SIM number is mandatory</constant></setHeader>
+                    <to uri="direct:LogOrError"/>
+                    <stop/>
+                </when>
+                <when>
+                    <simple>${exchangeProperty.simNo} starts with '0000'</simple>
+                    <setHeader name="errorCode"><constant>040</constant></setHeader>
+                    <setHeader name="errorDesc"><constant>SIM number is blocked</constant></setHeader>
+                    <to uri="direct:LogOrError"/>
+                    <stop/>
+                </when>
+            </choice>
+
+            <!-- 4. Call RMS backend in a sub-route (body gets REPLACED by RMS reply) -->
+            <to uri="direct:RmsInfo"/>
+
+            <choice>
+                <when>
+                    <simple>${exchangeProperty.rmsStatus} != 'ACTIVE'</simple>
+                    <setHeader name="errorCode"><constant>041</constant></setHeader>
+                    <setHeader name="errorDesc"><simple>Number status in RMS is ${exchangeProperty.rmsStatus}</simple></setHeader>
+                    <to uri="direct:LogOrError"/>
+                    <stop/>
+                </when>
+            </choice>
+
+            <!-- 5. RESTORE the original request (slide 12) -->
+            <setBody>
+                <simple resultType="org.w3c.dom.Document">${exchangeProperty.requestBody}</simple>
+            </setBody>
+
+            <!-- 6. Fire-and-forget transaction log; user does not wait (slide 18) -->
+            <wireTap uri="direct:SendTxnLog"/>
+
+            <!-- 7. Build API response -->
+            <to uri="direct:FinalResponse"/>
+        </route>
+
+        <!-- =========================================================
+             SUB-ROUTE: RMS call with local error handling (slides 13, 17, 34, 35)
+             ========================================================= -->
+        <route id="RmsInfo_Route">
+            <from uri="direct:RmsInfo"/>
+
+            <!-- XSLT 2.0 template (uses replace()) -> needs Saxon -> xslt-saxon (slide 35) -->
+            <to uri="xslt-saxon:customResources/transformation/xslt/Xform_RMS_Request.xsl"/>
+            <log message="[${exchangeProperty.traceId}] RMS request: ${body}"/>
+
+            <!-- Remove the incoming REST headers so they don't change the backend URL -->
+            <removeHeaders pattern="CamelHttp*"/>
+            <setHeader name="CamelHttpMethod"><constant>POST</constant></setHeader>
+            <setHeader name="Content-Type"><constant>application/xml</constant></setHeader>
+
+            <doTry>
+                <!-- {{rmsURL}} comes from application-dev.properties (slide 6, 34) -->
+                <to uri="{{rmsURL}}"/>
+                <convertBodyTo type="java.lang.String"/>
+                <log message="[${exchangeProperty.traceId}] RMS response: ${body}"/>
+                <setProperty name="rmsStatus">
+                    <xpath resultType="java.lang.String">/rmsResponse/status/text()</xpath>
+                </setProperty>
+                <doCatch>
+                    <exception>java.lang.Exception</exception>
+                    <log loggingLevel="ERROR" message="[${exchangeProperty.traceId}] RMS call failed: ${exception.message}"/>
+                    <setHeader name="errorCode"><constant>RMS500</constant></setHeader>
+                    <setHeader name="errorDesc"><constant>RMS backend is not available</constant></setHeader>
+                    <to uri="direct:LogOrError"/>
+                    <!-- stop ends the WHOLE exchange, including the main route -->
+                    <stop/>
+                </doCatch>
+            </doTry>
+        </route>
+
+        <!-- =========================================================
+             SUB-ROUTE: final success response (plain xslt, XSLT 1.0)
+             ========================================================= -->
+        <route id="FinalResponse_Route">
+            <from uri="direct:FinalResponse"/>
+            <to uri="xslt:customResources/transformation/xslt/Xform_FinalResponse.xsl"/>
+            <removeHeaders pattern="*" excludePattern="X-Trace-Id"/>
+            <setHeader name="Content-Type"><constant>application/xml</constant></setHeader>
+            <log message="[${exchangeProperty.traceId}] Final response: ${body}"/>
+        </route>
+
+        <!-- =========================================================
+             SECOND API: split + aggregate (slide 15)
+             ========================================================= -->
+        <route id="ChannelStatusStart_Route">
+            <from uri="direct:channelStatusStart"/>
+            <process ref="traceIdProcessor"/>
+            <convertBodyTo type="java.lang.String"/>
+
+            <split strategyRef="channelAggregationStrategy">
+                <xpath>/ChannelList/Channel</xpath>
+                <!-- each item is one <Channel> element -->
+                <convertBodyTo type="java.lang.String"/>
+                <setProperty name="currentChannel">
+                    <xpath resultType="java.lang.String">/Channel/text()</xpath>
+                </setProperty>
+                <log message="[${exchangeProperty.traceId}] Checking channel ${exchangeProperty.currentChannel}"/>
+                <to pattern="InOut" uri="direct:channelConnectorRoute"/>
+            </split>
+
+            <bean ref="channelAggregationStrategy" method="bodyBrace"/>
+            <removeHeaders pattern="*" excludePattern="X-Trace-Id"/>
+            <setHeader name="Content-Type"><constant>application/xml</constant></setHeader>
+        </route>
+
+        <route id="ChannelConnector_Route">
+            <from uri="direct:channelConnectorRoute"/>
+            <choice>
+                <when>
+                    <simple>${exchangeProperty.currentChannel} == 'USSD'</simple>
+                    <setBody><simple><![CDATA[<ChannelResult name="${exchangeProperty.currentChannel}" status="DOWN"/>]]></simple></setBody>
+                </when>
+                <otherwise>
+                    <setBody><simple><![CDATA[<ChannelResult name="${exchangeProperty.currentChannel}" status="UP"/>]]></simple></setBody>
+                </otherwise>
+            </choice>
+        </route>
+
+    </camelContext>
+</beans>
